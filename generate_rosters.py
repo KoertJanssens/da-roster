@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate 3 non-overlapping rosters from Raid-Helper raidplan endpoints.
+"""Generate 3 non-overlapping rosters from Raid-Helper event endpoints.
 
 Usage:
   python generate_rosters.py 149... 149... 149...
@@ -15,7 +15,7 @@ from typing import Any
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 
-API_URL = "https://raid-helper.xyz/api/raidplan/{id}"
+API_URL = "https://raid-helper.xyz/api/v4/events/{id}"
 
 
 @dataclass(frozen=True)
@@ -25,9 +25,9 @@ class Player:
 
 
 ROLE_HINTS = {
-    "tank": {"tank"},
-    "healer": {"healer", "heal"},
-    "dps": {"dps", "damage", "mdps", "rdps"},
+    "tank": {"tank", "tanks"},
+    "healer": {"healer", "healers", "heal"},
+    "dps": {"dps", "damage", "mdps", "rdps", "melee", "ranged"},
 }
 
 
@@ -63,31 +63,38 @@ def _extract_name(candidate: dict[str, Any]) -> str | None:
 
 
 def _extract_role(candidate: dict[str, Any]) -> str:
-    for key in ("role", "spec", "classRole", "raidRole", "selectedRole"):
+    for key in ("roleName", "role", "spec", "classRole", "raidRole", "selectedRole"):
         if key in candidate:
             return normalize_role(candidate.get(key))
     return "dps"
 
 
 def collect_players(obj: Any) -> list[Player]:
+    """Extract players from raid-helper `/api/v4/events/{id}` payloads."""
     found: list[Player] = []
 
-    def walk(node: Any) -> None:
-        if isinstance(node, list):
-            for entry in node:
-                walk(entry)
-            return
-        if not isinstance(node, dict):
-            return
+    if not isinstance(obj, dict):
+        return found
 
-        name = _extract_name(node)
-        if name is not None:
-            found.append(Player(name=name, role=_extract_role(node)))
+    signups = obj.get("signUps")
+    if not isinstance(signups, list):
+        return found
 
-        for value in node.values():
-            walk(value)
+    for signup in signups:
+        if not isinstance(signup, dict):
+            continue
+        # Keep only active signups and skip absences.
+        if str(signup.get("status", "")).lower() != "primary":
+            continue
+        if str(signup.get("className", "")).strip().lower() == "absence":
+            continue
+        if "userId" not in signup:
+            continue
 
-    walk(obj)
+        name = _extract_name(signup)
+        if not name:
+            continue
+        found.append(Player(name=name, role=_extract_role(signup)))
 
     dedup: dict[str, Player] = {}
     for p in found:
